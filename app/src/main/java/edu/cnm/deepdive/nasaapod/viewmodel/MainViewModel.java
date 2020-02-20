@@ -65,6 +65,13 @@ public class MainViewModel extends AndroidViewModel implements LifecycleObserver
             .subscribe()
     );
   }
+  public void getImage(@NonNull Apod apod, @NonNull Consumer<String> pathConsumer){
+    throwable.setValue(null);
+    repository.getImage(apod)
+        .doOnSuccess(pathConsumer)
+        .doOnError(throwable::postValue)
+        .subscribe();
+  }
 
   @SuppressWarnings("unused")
   @OnLifecycleEvent(Event.ON_STOP)
