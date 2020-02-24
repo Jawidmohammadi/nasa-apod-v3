@@ -112,6 +112,7 @@ public class ApodRepository {
     ){
      byte[] buffer = new byte[16_384];
      int bytesRead = 0;
+
      while (bytesRead >= 0) {
        bytesRead = input.read(buffer);
       if (bytesRead > 0){

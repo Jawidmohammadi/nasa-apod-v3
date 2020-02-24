@@ -11,7 +11,7 @@ def logging_level_class = "okhttp3.logging.HttpLoggingInterceptor.Level"
 android {
     compileSdkVersion 29
     defaultConfig {
-        applicationId "edu.cnm.deepdive.nasaapod"
+        applicationId "edu.cnm.deepdive.nasaapod" // this should be the same as the package name
         minSdkVersion 21
         targetSdkVersion 29
         versionCode 1
@@ -89,6 +89,9 @@ dependencies {
 
     // Picasso (image loader) dependency
     implementation 'com.squareup.picasso:picasso:2.71828'
+
+    // Google Sign-In dependency
+    implementation 'com.google.android.gms:play-services-auth:17.0.0'
 
     testImplementation 'junit:junit:4.12'
     androidTestImplementation 'androidx.test:runner:1.2.0'
