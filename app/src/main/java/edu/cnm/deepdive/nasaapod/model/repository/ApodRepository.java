@@ -7,7 +7,7 @@ import android.net.Uri;
 import android.os.Build.VERSION;
 import android.os.Build.VERSION_CODES;
 import android.os.Environment;
-import android.provider.MediaStore.Audio.Media;
+import android.provider.MediaStore.Images.Media;
 import android.provider.MediaStore.MediaColumns;
 import android.webkit.MimeTypeMap;
 import androidx.annotation.NonNull;
@@ -33,7 +33,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Date;
 import java.util.List;
-import java.util.Observer;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
@@ -45,8 +44,9 @@ public class ApodRepository {
   private static final int NETWORK_THREAD_COUNT = 10;
   private static final Pattern URL_FILENAME_PATTERN =
       Pattern.compile("^.*/([^/#?]+)(?:\\?.*)?(?:#.*)?$");
-  private static final String  LOCAL_FILENAME_FORMAT = "%1$tY%1$tm%1$td-%2$s";
+  private static final String LOCAL_FILENAME_FORMAT = "%1$tY%1$tm%1$td-%2$s";
   private static final String MEDIA_RECORD_FAILURE = "Unable to create MediaStore record.";
+  private static final int BUFFER_SIZE = 16_384;
   private final ApodDatabase database;
   private final ApodService nasa;
   private final Executor networkPool;
@@ -94,29 +94,28 @@ public class ApodRepository {
   }
 
   public Single<String> getImage(@NonNull Apod apod) {
-    // TODO Add local file download & reference.
     boolean canBeLocal = (apod.getMediaType() == MediaType.IMAGE);
     File file = canBeLocal ? getFile(apod) : null;
-    return Maybe.fromCallable( () ->
-    canBeLocal ? (file.exists() ? file.toURI().toString() : null) : apod.getUrl()
+    return Maybe.fromCallable(() ->
+        canBeLocal ? (file.exists() ? file.toURI().toString() : null) : apod.getUrl()
     )
-    .switchIfEmpty((SingleSource<String>) (observer) ->
-        nasa.getFile(apod.getUrl())
-        .map((body) -> {
-          try {
-            return download(body, file);
-          } catch (IOException ex){
-            return apod.getUrl();
-          }
-            })
-        .subscribeOn(Schedulers.from(networkPool))
-        .subscribe(observer)
-    );
+        .switchIfEmpty((SingleSource<String>) (observer) ->
+            nasa.getFile(apod.getUrl())
+                .map((body) -> {
+                  try {
+                    return downloadCache(body, file);
+                  } catch (IOException ex) {
+                    return apod.getUrl();
+                  }
+                })
+                .subscribeOn(Schedulers.from(networkPool))
+                .subscribe(observer)
+        );
   }
 
 
-  public Completable downloadImage(@NonNull Apod apod){
-    if (apod.getMediaType() != MediaType.IMAGE){
+  public Completable downloadImage(@NonNull Apod apod) {
+    if (apod.getMediaType() != MediaType.IMAGE) {
       throw new IllegalArgumentException();
     }
     String url = (apod.getHdUrl() != null ? apod.getHdUrl() : apod.getUrl());
@@ -128,18 +127,19 @@ public class ApodRepository {
           try (
               InputStream input = body.byteStream();
               OutputStream output = resolver.openOutputStream(uri);
-          ){
+          ) {
             copy(input, output);
-          } catch (IOException ex){
+          } catch (IOException ex) {
             resolver.delete(uri, null, null);
-            //TODO Throw new exception?
+            throw ex;
+
           }
           return true;
         })
         .ignoreElement();
   }
 
-  private Uri getMediaUri (@NonNull ContentResolver resolver, @NonNull String sourceUrl,
+  private Uri getMediaUri(@NonNull ContentResolver resolver, @NonNull String sourceUrl,
       @NonNull String title) throws IOException {
     String extension = MimeTypeMap.getFileExtensionFromUrl(sourceUrl);
     MimeTypeMap map = MimeTypeMap.getSingleton();
@@ -147,62 +147,55 @@ public class ApodRepository {
     ContentValues contentValues = new ContentValues();
     contentValues.put(MediaColumns.DISPLAY_NAME, title);
     contentValues.put(MediaColumns.MIME_TYPE, mimeType);
-    if (VERSION.SDK_INT >= VERSION_CODES.Q){
+    if (VERSION.SDK_INT >= VERSION_CODES.Q) {
       contentValues.put(MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES);
     }
     Uri uri = resolver.insert(Media.EXTERNAL_CONTENT_URI, contentValues);
-    if (uri == null){
+    if (uri == null) {
       throw new IOException(MEDIA_RECORD_FAILURE);
     }
     return uri;
   }
 
-  private long copy(InputStream input, OutputStream output) throws IOException{
-    byte[] buffer = new byte[16_384];
+  private long copy(InputStream input, OutputStream output) throws IOException {
+    byte[] buffer = new byte[BUFFER_SIZE];
     long totalBytes = 0;
     int bytesRead;
     do {
-      if ((bytesRead = input.read(buffer)) > 0){
+      if ((bytesRead = input.read(buffer)) > 0) {
         output.write(buffer, 0, bytesRead);
         totalBytes += bytesRead;
       }
 
     } while (bytesRead >= 0);
+    output.flush();
     return totalBytes;
   }
 
-  private String download(ResponseBody body, File file) throws IOException {
+  private String downloadCache(ResponseBody body, File file) throws IOException {
     try (
         InputStream input = body.byteStream();
         OutputStream output = new FileOutputStream(file);
-    ){
-     byte[] buffer = new byte[16_384];
-     int bytesRead = 0;
-
-     while (bytesRead >= 0) {
-       bytesRead = input.read(buffer);
-      if (bytesRead > 0){
-        output.write(buffer, 0, bytesRead);
-      }
-     }
-     output.flush();
-     return file.toURI().toString();
+    ) {
+      copy(input, output);
+        return file.toURI().toString();
     }
   }
-  private File getFile(@NonNull Apod apod){
+
+  private File getFile(@NonNull Apod apod) {
     String url = apod.getUrl();
     File file = null;
-  Matcher matcher = URL_FILENAME_PATTERN.matcher(url);
-  if (matcher.matches()){
-    String filename = String.format(LOCAL_FILENAME_FORMAT, apod.getDate(), matcher.group(1));
-    File directory = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
-    if (!Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState(directory))){
-      directory = context.getFilesDir();
-    }
-    file = new File(directory, filename);
+    Matcher matcher = URL_FILENAME_PATTERN.matcher(url);
+    if (matcher.matches()) {
+      String filename = String.format(LOCAL_FILENAME_FORMAT, apod.getDate(), matcher.group(1));
+      File directory = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+      if (!Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState(directory))) {
+        directory = context.getFilesDir();
+      }
+      file = new File(directory, filename);
 
-  }
-  return file;
+    }
+    return file;
   }
 
   private void insertAccess(Apod apod) {
